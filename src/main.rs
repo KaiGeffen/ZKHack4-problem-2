@@ -1,12 +1,10 @@
-use std::{dbg, ops::Add};
-
 use ark_bls12_381::{g2::Config, Bls12_381, Fr, G1Affine, G1Projective, G2Affine, G2Projective};
 use ark_ec::{
     hashing::{curve_maps::wb::WBMap, map_to_curve_hasher::MapToCurveBasedHasher, HashToCurve},
     pairing::Pairing,
     AffineRepr, CurveGroup,
 };
-use ark_ff::field_hashers::DefaultFieldHasher;
+use ark_ff::{field_hashers::DefaultFieldHasher, Field};
 
 use ark_serialize::{CanonicalDeserialize, Read};
 
@@ -36,21 +34,7 @@ fn pok_prove(sk: Fr, i: usize) -> G2Affine {
 
 // Verify the given proof (public key, input, proof)
 fn pok_verify(pk: G1Affine, i: usize, proof: G2Affine) {
-    // dbg!(
-    //     Bls12_381::multi_pairing(
-    //         &[pk],
-    //         &[derive_point_for_pok(i).neg()]
-    //     )
-    // );
-    // dbg!(
-    //     Bls12_381::multi_pairing(
-    //         &[G1Affine::generator()],
-    //         &[proof]
-    //     )
-    // );
-    // This is wrong:
-    // G * proof = pk * point
-    // (G * proof) * (pk * -point) = 0
+    // e(pk, point) * e(G, proof)
     assert!(Bls12_381::multi_pairing(
         &[pk, G1Affine::generator()],
         &[derive_point_for_pok(i).neg(), proof]
@@ -93,7 +77,7 @@ fn from_file<T: CanonicalDeserialize>(path: &str) -> T {
     T::deserialize_uncompressed_unchecked(Cursor::new(&buffer)).unwrap()
 }
 
-fn main() {
+fn main() {    
     welcome();
     puzzle(PUZZLE_DESCRIPTION);
 
@@ -127,43 +111,65 @@ fn main() {
         // Iterator over the public keys
         .iter()
         // Fold the new key plus all of the other keys
-        .fold(G1Projective::from(G1Affine::zero()), |acc, (pk, _)|{
-            
-            acc + pk
-        })
+        .fold(G1Projective::from(G1Affine::zero()), |acc, (pk, _)|acc - pk)
         // Transform into affine representation
         .into_affine();
 
     // Take the proof for the first block (Block 0)
-    let proof_0 = public_keys[0].1;
-    let proof_n = public_keys[new_key_index - 1].1;
+    // let proof_0 = public_keys[0].1;
+    // let proof_n = public_keys[new_key_index - 1].1;
     // It was generated as sk * rng * (index + 1)
     // so if we multiply by our new index+1 we get the proof we want
-    let new_proof = proof_0.add(proof_n).into_affine();
+    // let new_proof = proof_0.add(proof_n).into_affine();
     // proof_0.mul(Fr::from(new_key_index as u64 + 1)).into();
 
-    // let new_proof = public_keys
-    //     // Iterator over the public keys
-    //     .iter()
-    //     // Fold the new key plus all of the other keys
-    //     .fold(G2Projective::from(G2Affine::zero()), |acc, (_, proof)| acc - proof)
-    //     // Transform into affine representation
-    //     .into_affine();
+    // n! where n is the index of the new block (9)
+    let factorial: u64 = 362880;
+    let factorial_in_field: Fr = Fr::from(factorial);
+    // The factorial's inverse in the field
+    let inverse = factorial_in_field.inverse().unwrap();
+    //47219887007697480994944254261702310610499426305610458197155785386193864019011
 
-    // The proof for the new key
-    // This is just a proof of that key
-    // TODO Convert new_key into the struct expected
-    // TODO sk must be of the type ark_bls12_381::fields::fr 
+    let new_proof = public_keys
+        // Iterator over the public keys
+        .iter()
+        .enumerate()
+        // Fold the new key plus all of the other keys
+        .fold(G2Projective::from(G2Affine::zero()), |acc, (i, (_, proof))| {
+            // I want `proofn = rng * n * ski`
+            // What I have is `proofi = rng * i * ski`
+             
+            // First take the proof and multiply it by n!
+            // Through bilinearity we can separate the proof into the sum of terms:
+            // [rng * (i + 1) * s0] * [factorial / i + 1] * [n + 1]
+            // = proof_i * [The rest of rho] * [n + 1]
+            // We divide out factorial later
+            let range = 0..(new_key_index);
+            
+            // This is n! divided by (i + 1)
+            let factorial_except_i = range.fold(1, |acc, range_index| {
+                // Range index is the 
+                if range_index == i {
+                    acc
+                }
+                else {
+                    acc * (range_index + 1)
+                }
+            });
 
-    // let new_proof = pok_prove(new_key, new_key_index);
-    // let new_proof = bls_sign(Fr::from(0), message);
+            acc - proof
+            .mul(Fr::from(new_key_index as u64 + 1))
+            .mul(Fr::from(factorial_except_i as u64))
+        })
+        .mul(inverse)
+        // Transform into affine representation
+        .into_affine();
+
     // The aggregated signature
     // If I just keep this zero, the bls verifies, LOL?
     let aggregate_signature = G2Affine::zero();
 
     /* End of solution */
-
-
 
     // Verify the new key + it's index + the new proof
     pok_verify(new_key, new_key_index, new_proof);
@@ -175,8 +181,6 @@ fn main() {
         .fold(G1Projective::from(new_key), |acc, (pk, _)| acc + pk)
         // Transform into affine representation
         .into_affine();
-
-    // Foo(1) Let's give a aggregate_key, aggregate_signature pair that verifies for the given message
 
     // Verify the signed message
     // (Using the aggregate of the keys, including the new one, the signature formed, and the message)
